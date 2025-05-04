@@ -1,5 +1,5 @@
 {
-  "name": "n8n-nodes-imap",
+  "name": "n8n-nodes-imap-eml-continuous",
   "version": "2.7.0",
   "description": "This node allows you to connect to an IMAP server and retrieve emails.",
   "keywords": [

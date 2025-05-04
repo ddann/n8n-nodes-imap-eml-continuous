@@ -3,6 +3,7 @@ import { IBinaryKeyData, IDataObject, IExecuteFunctions, INodeExecutionData } fr
 import { IResourceOperationDef } from "../../../utils/CommonDefinitions";
 import { getMailboxPathFromNodeParameter, parameterSelectMailbox } from "../../../utils/SearchFieldParameters";
 import { emailSearchParameters } from "../../../utils/EmailSearchParameters";
+import { getEmailSearchParametersFromNode } from "../../../utils/EmailSearchParameters";
 
 // Copy EmailParts enum from Get Many for use in options
 enum EmailParts {
@@ -127,45 +128,72 @@ export const downloadOperation: IResourceOperationDef = {
   ],
   async executeImapAction(context: IExecuteFunctions, itemIndex: number, client: ImapFlow): Promise<INodeExecutionData[] | null> {
     const mailboxPath = getMailboxPathFromNodeParameter(context, itemIndex);
-
     await client.mailboxOpen(mailboxPath, { readOnly: true });
 
     const emailUid = context.getNodeParameter('emailUid', itemIndex) as string;
     const outputToBinary = context.getNodeParameter('outputToBinary', itemIndex, true) as boolean;
     const binaryPropertyName = context.getNodeParameter('binaryPropertyName', itemIndex, 'data',) as string;
 
-    // get source from the email
     const query: FetchQueryObject = {
       uid: true,
       source: true,
     };
-    const emailInfo = await client.fetchOne(emailUid, query, { uid: true });
 
+    let results: INodeExecutionData[] = [];
 
-    let binaryFields: IBinaryKeyData | undefined = undefined;
-    let jsonData: IDataObject = {};
-
-    if (outputToBinary) {
-      // output to binary data
-      const binaryData = await context.helpers.prepareBinaryData(emailInfo.source, mailboxPath + '_' + emailUid + '.eml', 'message/rfc822');
-      binaryFields = {
-        [binaryPropertyName]: binaryData,
-      };
+    if (emailUid) {
+      // Download a single email by UID (current behavior)
+      const emailInfo = await client.fetchOne(emailUid, query, { uid: true });
+      if (!emailInfo || !emailInfo.source) {
+        throw new Error('No email found with the specified UID');
+      }
+      let binaryFields: IBinaryKeyData | undefined = undefined;
+      let jsonData: IDataObject = {};
+      if (outputToBinary) {
+        const binaryData = await context.helpers.prepareBinaryData(emailInfo.source, mailboxPath + '_' + emailUid + '.eml', 'message/rfc822');
+        binaryFields = {
+          [binaryPropertyName]: binaryData,
+        };
+      } else {
+        jsonData = {
+          ...jsonData,
+          emlContent: emailInfo.source.toString(),
+        };
+      }
+      results.push({
+        json: jsonData,
+        binary: binaryFields,
+        pairedItem: { item: itemIndex },
+      });
     } else {
-      // output to JSON as text
-      jsonData = {
-        ...jsonData,
-        emlContent: emailInfo.source.toString(),
-      };
+      // Download all emails matching search parameters (or all in mailbox)
+      const searchObject = getEmailSearchParametersFromNode(context, itemIndex);
+      let foundAny = false;
+      for await (const email of client.fetch(searchObject, query)) {
+        foundAny = true;
+        let binaryFields: IBinaryKeyData | undefined = undefined;
+        let jsonData: IDataObject = {};
+        if (outputToBinary) {
+          const binaryData = await context.helpers.prepareBinaryData(email.source, mailboxPath + '_' + email.uid + '.eml', 'message/rfc822');
+          binaryFields = {
+            [binaryPropertyName]: binaryData,
+          };
+        } else {
+          jsonData = {
+            ...jsonData,
+            emlContent: email.source.toString(),
+          };
+        }
+        results.push({
+          json: jsonData,
+          binary: binaryFields,
+          pairedItem: { item: itemIndex },
+        });
+      }
+      if (!foundAny) {
+        throw new Error('No emails found matching the search criteria.');
+      }
     }
-
-    const newItem: INodeExecutionData = {
-      json: jsonData,
-      binary: binaryFields,
-      pairedItem: {
-        item: itemIndex,
-      },
-    };
-    return [newItem];
+    return results;
   },
 };
